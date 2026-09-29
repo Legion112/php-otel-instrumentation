@@ -32,10 +32,51 @@ fn is_front_controller(path: &str) -> bool {
         || path == "index.php"
 }
 
+fn script_basename(script_path: Option<&str>) -> &str {
+    script_path
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .and_then(|p| Path::new(p).file_name())
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("php")
+}
+
+/// CLI root name from script path + process argv.
+///
+/// Examples: `CLI artisan db:seed`, `CLI artisan`, `CLI console.php cache:clear`.
+pub fn cli_span_name(script_path: Option<&str>, argv: &[impl AsRef<str>]) -> String {
+    let basename = script_basename(script_path);
+    match cli_command_from_argv(basename, argv) {
+        Some(cmd) => format!("CLI {basename} {cmd}"),
+        None => format!("CLI {basename}"),
+    }
+}
+
+/// First non-option arg after the script entry in `argv`.
+fn cli_command_from_argv<'a>(basename: &str, argv: &'a [impl AsRef<str>]) -> Option<&'a str> {
+    let start = argv
+        .iter()
+        .position(|a| {
+            Path::new(a.as_ref())
+                .file_name()
+                .and_then(|s| s.to_str())
+                == Some(basename)
+        })
+        .map(|i| i + 1)
+        .unwrap_or(1); // skip argv[0] binary when script not found in argv
+
+    argv.get(start..)
+        .into_iter()
+        .flatten()
+        .map(|a| a.as_ref())
+        .find(|a| !a.is_empty() && !a.starts_with('-'))
+}
+
 /// Build a root span name from optional SAPI / env request fields.
 ///
 /// - HTTP: `{METHOD} {path}` (query string stripped)
-/// - CLI (no method): `CLI {script_basename}`
+/// - CLI (no method): `CLI {script_basename}` (use [`cli_span_name`] when argv is available)
 pub fn root_span_name(
     method: Option<&str>,
     request_uri: Option<&str>,
@@ -58,12 +99,8 @@ pub fn root_span_name_from_candidates(
         }
         None => {
             let script = path_translated
-                .or_else(|| uri_candidates.iter().flatten().copied().next())
-                .and_then(|p| Path::new(p).file_name())
-                .and_then(|s| s.to_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("php");
-            format!("CLI {script}")
+                .or_else(|| uri_candidates.iter().flatten().copied().next());
+            cli_span_name(script, &[] as &[&str])
         }
     }
 }
@@ -142,6 +179,48 @@ mod tests {
                 None,
             ),
             "GET /index.php"
+        );
+    }
+
+    #[test]
+    fn cli_artisan_with_command() {
+        let argv = ["php", "artisan", "db:seed"];
+        assert_eq!(
+            cli_span_name(Some("/app/artisan"), &argv),
+            "CLI artisan db:seed"
+        );
+    }
+
+    #[test]
+    fn cli_artisan_skips_flags_before_command() {
+        let argv = ["php", "/var/www/artisan", "--env=testing", "db:seed"];
+        assert_eq!(
+            cli_span_name(Some("/var/www/artisan"), &argv),
+            "CLI artisan db:seed"
+        );
+    }
+
+    #[test]
+    fn cli_artisan_command_then_flags() {
+        let argv = ["php", "artisan", "migrate", "--force"];
+        assert_eq!(
+            cli_span_name(Some("artisan"), &argv),
+            "CLI artisan migrate"
+        );
+    }
+
+    #[test]
+    fn cli_artisan_no_command() {
+        let argv = ["php", "artisan"];
+        assert_eq!(cli_span_name(Some("artisan"), &argv), "CLI artisan");
+    }
+
+    #[test]
+    fn cli_non_artisan_script() {
+        let argv = ["php", "bin/console.php", "cache:clear"];
+        assert_eq!(
+            cli_span_name(Some("/app/bin/console.php"), &argv),
+            "CLI console.php cache:clear"
         );
     }
 }

@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
-use otel_auto_core::root_span_name_from_candidates;
+use otel_auto_core::{cli_span_name, prefer_http_path, root_span_name_from_candidates};
 use ext_php_rs::prelude::*;
 use ext_php_rs::types::Zval;
 use ext_php_rs::zend::{ExecuteData, FcallInfo, FcallObserver, ProcessGlobals, SapiGlobals};
@@ -127,21 +127,53 @@ extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
         // Last resort: SCRIPT_NAME (/index.php) — better than nothing for HTTP.
         sapi_script_name.as_deref(),
     ];
-    let name = root_span_name_from_candidates(
-        method.as_deref(),
-        &candidates,
-        script.as_deref(),
-    );
-    let path_attr = method.as_ref().map(|_| {
-        otel_auto_core::prefer_http_path(&candidates).to_string()
-    });
+    let method_trimmed = method
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
+    let name = if method_trimmed.is_some() {
+        root_span_name_from_candidates(method_trimmed, &candidates, script.as_deref())
+    } else {
+        // Prefer $_SERVER['argv'] (PHP CLI); process args as fallback.
+        let argv = cli_argv();
+        cli_span_name(script.as_deref(), &argv)
+    };
+    let path_attr = method_trimmed.map(|_| prefer_http_path(&candidates).to_string());
     tracer::start_root(
         &name,
-        method.as_deref(),
+        method_trimmed,
         path_attr.as_deref(),
     );
 
     0
+}
+
+/// PHP `$_SERVER['argv']` when present, otherwise `std::env::args()`.
+fn cli_argv() -> Vec<String> {
+    let pg = ProcessGlobals::get();
+    if let Some(server) = pg.http_server_vars() {
+        if let Some(zv) = server.get("argv") {
+            if let Some(ht) = zv.array() {
+                let mut out = Vec::new();
+                let mut i: i64 = 0;
+                while let Some(el) = ht.get_index(i) {
+                    if let Some(s) = el.string() {
+                        out.push(s);
+                    } else if let Some(s) = el.str() {
+                        out.push(s.to_string());
+                    }
+                    i += 1;
+                    if i > 256 {
+                        break;
+                    }
+                }
+                if !out.is_empty() {
+                    return out;
+                }
+            }
+        }
+    }
+    std::env::args().collect()
 }
 
 fn sapi_env(key: &str) -> Option<String> {

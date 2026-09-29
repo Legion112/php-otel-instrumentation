@@ -112,13 +112,17 @@ pub fn current_traceparent() -> Option<String> {
     ACTIVE.with(|a| a.borrow().last().map(|s| s.ctx.traceparent()))
 }
 
-/// Start FPM/HTTP root span from request globals when available.
-pub fn start_http_root(method: &str, path: &str) {
-    if !start_span(format!("{method} {path}"), SpanKind::Server) {
+/// Start SERVER root span with the given display name and optional HTTP attrs.
+pub fn start_root(name: impl Into<String>, method: Option<&str>, path: Option<&str>) {
+    if !start_span(name, SpanKind::Server) {
         return;
     }
     current_mut(|s| {
-        s.set_attr("http.request.method", method);
-        s.set_attr("url.path", path);
+        if let Some(m) = method {
+            s.set_attr("http.request.method", m);
+        }
+        if let Some(p) = path {
+            s.set_attr("url.path", p);
+        }
     });
 }

@@ -6,9 +6,10 @@ mod tracer;
 use std::cell::Cell;
 use std::os::raw::c_int;
 
+use otel_auto_core::root_span_name;
 use ext_php_rs::prelude::*;
 use ext_php_rs::types::Zval;
-use ext_php_rs::zend::{ExecuteData, FcallInfo, FcallObserver};
+use ext_php_rs::zend::{ExecuteData, FcallInfo, FcallObserver, SapiGlobals};
 
 use instrument::{begin_hook, classify, end_hook, HookKind};
 
@@ -86,15 +87,38 @@ unsafe fn zstr_to_str<'a>(s: *mut ext_php_rs::ffi::zend_string) -> Option<&'a st
 
 extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
     tracer::on_request_start();
-    let method = std::env::var("REQUEST_METHOD").unwrap_or_else(|_| "CLI".into());
-    let path = std::env::var("REQUEST_URI")
-        .or_else(|_| std::env::var("SCRIPT_NAME"))
-        .unwrap_or_else(|_| "/".into());
-    if method != "CLI" {
-        tracer::start_http_root(&method, path.split('?').next().unwrap_or("/"));
-    } else {
-        let _ = tracer::start_span("php.request", otel_auto_core::span::SpanKind::Server);
-    }
+
+    // Prefer SAPI request_info (FPM/FastCGI); process env is only a test fallback.
+    let (sapi_method, sapi_uri, sapi_script) = {
+        let sg = SapiGlobals::get();
+        let info = sg.request_info();
+        (
+            info.request_method().map(str::to_owned),
+            info.request_uri().map(str::to_owned),
+            info.path_translated().map(str::to_owned),
+        )
+    };
+    let method = sapi_method.or_else(|| std::env::var("REQUEST_METHOD").ok());
+    let uri = sapi_uri
+        .or_else(|| std::env::var("REQUEST_URI").ok())
+        .or_else(|| std::env::var("SCRIPT_NAME").ok());
+    let script = sapi_script.or_else(|| std::env::var("SCRIPT_FILENAME").ok());
+
+    let name = root_span_name(
+        method.as_deref(),
+        uri.as_deref(),
+        script.as_deref(),
+    );
+    let path_attr = method.as_ref().map(|_| {
+        uri.as_deref()
+            .or(script.as_deref())
+            .unwrap_or("/")
+            .split('?')
+            .next()
+            .unwrap_or("/")
+    });
+    tracer::start_root(&name, method.as_deref(), path_attr);
+
     0
 }
 

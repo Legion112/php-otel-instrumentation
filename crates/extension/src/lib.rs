@@ -4,12 +4,18 @@ mod instrument;
 mod tracer;
 
 use std::cell::Cell;
-use std::os::raw::c_int;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
 
-use otel_auto_core::root_span_name;
+use otel_auto_core::root_span_name_from_candidates;
 use ext_php_rs::prelude::*;
 use ext_php_rs::types::Zval;
-use ext_php_rs::zend::{ExecuteData, FcallInfo, FcallObserver, SapiGlobals};
+use ext_php_rs::zend::{ExecuteData, FcallInfo, FcallObserver, ProcessGlobals, SapiGlobals};
+
+// FPM/CGI request env (not process environ). SG(request_info).request_uri is SCRIPT_NAME.
+unsafe extern "C" {
+    fn sapi_getenv(name: *const c_char, name_len: usize) -> *mut c_char;
+}
 
 use instrument::{begin_hook, classify, end_hook, HookKind};
 
@@ -88,38 +94,85 @@ unsafe fn zstr_to_str<'a>(s: *mut ext_php_rs::ffi::zend_string) -> Option<&'a st
 extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
     tracer::on_request_start();
 
-    // Prefer SAPI request_info (FPM/FastCGI); process env is only a test fallback.
-    let (sapi_method, sapi_uri, sapi_script) = {
+    // FPM sets SG(request_info).request_uri to SCRIPT_NAME (/index.php), not the
+    // client URI. Real path is FastCGI REQUEST_URI → sapi_getenv / $_SERVER.
+    let (sapi_method, sapi_script_name, sapi_script) = {
         let sg = SapiGlobals::get();
         let info = sg.request_info();
         (
             info.request_method().map(str::to_owned),
-            info.request_uri().map(str::to_owned),
+            info.request_uri().map(str::to_owned), // SCRIPT_NAME under FPM
             info.path_translated().map(str::to_owned),
         )
     };
-    let method = sapi_method.or_else(|| std::env::var("REQUEST_METHOD").ok());
-    let uri = sapi_uri
-        .or_else(|| std::env::var("REQUEST_URI").ok())
-        .or_else(|| std::env::var("SCRIPT_NAME").ok());
-    let script = sapi_script.or_else(|| std::env::var("SCRIPT_FILENAME").ok());
+    let fcgi_uri = sapi_env("REQUEST_URI");
+    let fcgi_method = sapi_env("REQUEST_METHOD");
+    let (server_uri, server_redirect, server_path_info, server_method) = server_request_fields();
 
-    let name = root_span_name(
+    let method = sapi_method
+        .or(fcgi_method)
+        .or(server_method)
+        .or_else(|| std::env::var("REQUEST_METHOD").ok());
+    let process_env_uri = std::env::var("REQUEST_URI").ok();
+    let script = sapi_script
+        .or_else(|| sapi_env("SCRIPT_FILENAME"))
+        .or_else(|| std::env::var("SCRIPT_FILENAME").ok());
+
+    let candidates = [
+        fcgi_uri.as_deref(),
+        server_uri.as_deref(),
+        server_redirect.as_deref(),
+        server_path_info.as_deref(),
+        process_env_uri.as_deref(),
+        // Last resort: SCRIPT_NAME (/index.php) — better than nothing for HTTP.
+        sapi_script_name.as_deref(),
+    ];
+    let name = root_span_name_from_candidates(
         method.as_deref(),
-        uri.as_deref(),
+        &candidates,
         script.as_deref(),
     );
     let path_attr = method.as_ref().map(|_| {
-        uri.as_deref()
-            .or(script.as_deref())
-            .unwrap_or("/")
-            .split('?')
-            .next()
-            .unwrap_or("/")
+        otel_auto_core::prefer_http_path(&candidates).to_string()
     });
-    tracer::start_root(&name, method.as_deref(), path_attr);
+    tracer::start_root(
+        &name,
+        method.as_deref(),
+        path_attr.as_deref(),
+    );
 
     0
+}
+
+fn sapi_env(key: &str) -> Option<String> {
+    let c_name = CString::new(key).ok()?;
+    unsafe {
+        let ptr = sapi_getenv(c_name.as_ptr(), key.len());
+        if ptr.is_null() {
+            return None;
+        }
+        // FPM returns a pointer into the request env; do not free.
+        CStr::from_ptr(ptr).to_str().ok().map(str::to_owned)
+    }
+}
+
+fn server_request_fields() -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let pg = ProcessGlobals::get();
+    let Some(server) = pg.http_server_vars() else {
+        return (None, None, None, None);
+    };
+    let get = |key: &str| server.get(key).and_then(|z| z.string());
+    (
+        get("REQUEST_URI"),
+        get("REDIRECT_URL"),
+        get("PATH_INFO"),
+        get("REQUEST_METHOD"),
+    )
 }
 
 extern "C" fn request_shutdown(_type: c_int, _module_number: c_int) -> c_int {

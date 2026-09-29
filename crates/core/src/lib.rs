@@ -9,6 +9,6 @@ pub mod truncate;
 
 pub use config::OtelConfig;
 pub use parse::grpc_path::{parse_grpc_path, GrpcPath};
-pub use request_name::root_span_name;
+pub use request_name::{prefer_http_path, root_span_name, root_span_name_from_candidates};
 pub use span::{SpanKind, SpanStatus, StartedSpan, TraceContext};
 pub use truncate::truncate_statement;

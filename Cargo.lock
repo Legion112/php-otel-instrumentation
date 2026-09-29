@@ -29,27 +29,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alanbase-otel-core"
-version = "0.1.0"
-dependencies = [
- "hex",
- "rand",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "ureq 2.12.1",
-]
-
-[[package]]
-name = "alanbase_otel"
-version = "0.1.0"
-dependencies = [
- "alanbase-otel-core",
- "ext-php-rs",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -937,6 +916,27 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "otel-auto-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "ureq 2.12.1",
+]
+
+[[package]]
+name = "otel_auto"
+version = "0.1.0"
+dependencies = [
+ "ext-php-rs",
+ "otel-auto-core",
 ]
 
 [[package]]

@@ -1,9 +1,9 @@
 [package]
-name = "alanbase-otel-core"
+name = "otel-auto-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure Rust core for Alanbase PHP OTEL auto-instrumentation (config, parsing, OTLP export)"
+description = "Pure Rust core for PHP OTEL auto-instrumentation (config, parsing, OTLP export)"
 
 [dependencies]
 serde = { workspace = true }

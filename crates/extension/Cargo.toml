@@ -1,14 +1,14 @@
 [package]
-name = "alanbase_otel"
+name = "otel_auto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PHP 8.2 auto-instrumentation extension (OpenTelemetry) for Alanbase"
+description = "PHP 8.2 OpenTelemetry auto-instrumentation extension"
 
 [lib]
 crate-type = ["cdylib"]
-name = "alanbase_otel"
+name = "otel_auto"
 
 [dependencies]
-alanbase-otel-core = { workspace = true }
+otel-auto-core = { workspace = true }
 ext-php-rs = { version = "0.15", features = ["observer"] }

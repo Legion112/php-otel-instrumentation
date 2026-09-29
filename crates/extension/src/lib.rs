@@ -17,9 +17,9 @@ thread_local! {
 }
 
 /// Auto-instrumentation observer.
-pub struct AlanbaseObserver;
+pub struct OtelAutoObserver;
 
-impl FcallObserver for AlanbaseObserver {
+impl FcallObserver for OtelAutoObserver {
     fn should_observe(&self, info: &FcallInfo) -> bool {
         classify(info).is_some()
     }
@@ -93,7 +93,7 @@ extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
     if method != "CLI" {
         tracer::start_http_root(&method, path.split('?').next().unwrap_or("/"));
     } else {
-        let _ = tracer::start_span("php.request", alanbase_otel_core::span::SpanKind::Server);
+        let _ = tracer::start_span("php.request", otel_auto_core::span::SpanKind::Server);
     }
     0
 }
@@ -107,8 +107,8 @@ extern "C" fn request_shutdown(_type: c_int, _module_number: c_int) -> c_int {
 pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
     tracer::init_config();
     module
-        .name("alanbase_otel")
+        .name("otel_auto")
         .request_startup_function(request_startup)
         .request_shutdown_function(request_shutdown)
-        .fcall_observer(|| AlanbaseObserver)
+        .fcall_observer(|| OtelAutoObserver)
 }

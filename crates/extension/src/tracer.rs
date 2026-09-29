@@ -3,9 +3,9 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use alanbase_otel_core::config::OtelConfig;
-use alanbase_otel_core::export::export_spans;
-use alanbase_otel_core::span::{SpanKind, StartedSpan, TraceContext};
+use otel_auto_core::config::OtelConfig;
+use otel_auto_core::export::export_spans;
+use otel_auto_core::span::{SpanKind, StartedSpan, TraceContext};
 
 static CONFIG: OnceLock<OtelConfig> = OnceLock::new();
 
@@ -58,7 +58,7 @@ fn flush() {
         return;
     }
     if let Err(e) = export_spans(config(), &spans) {
-        eprintln!("alanbase_otel: export failed: {e}");
+        eprintln!("otel_auto: export failed: {e}");
     }
 }
 

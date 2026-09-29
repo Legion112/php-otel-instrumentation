@@ -11,19 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p alanbase-otel-core
+      - run: cargo test -p otel-auto-core
 
   build-so:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f Dockerfile.build --target builder -t alanbase-otel-build .
+      - run: docker build -f Dockerfile.build --target builder -t otel-auto-build .
       - run: |
-          id=$(docker create alanbase-otel-build)
-          docker cp "$id:/tmp/alanbase_otel.so" alanbase_otel.so
+          id=$(docker create otel-auto-build)
+          docker cp "$id:/tmp/otel_auto.so" otel_auto.so
           docker rm "$id"
-          ls -la alanbase_otel.so
+          ls -la otel_auto.so
       - uses: actions/upload-artifact@v4
         with:
-          name: alanbase_otel.so
-          path: alanbase_otel.so
+          name: otel_auto.so
+          path: otel_auto.so

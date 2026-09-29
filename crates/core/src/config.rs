@@ -1,4 +1,4 @@
-//! Environment-based OTEL configuration (matches infra common.env / Go libs).
+//! Environment-based OTEL configuration (`OTEL_*` process env vars).
 
 use std::env;
 
@@ -13,7 +13,7 @@ pub struct OtelConfig {
 }
 
 impl OtelConfig {
-    /// Load from environment. Defaults align with Alanbase local stack.
+    /// Load from environment. Sensible defaults for local OTLP collectors.
     pub fn from_env() -> Self {
         Self::from_env_map(|k| env::var(k).ok())
     }
@@ -125,8 +125,8 @@ mod tests {
     #[test]
     fn service_name_from_hostname() {
         let mut m = HashMap::new();
-        m.insert("HOSTNAME", "alanbase");
+        m.insert("HOSTNAME", "my-service");
         let cfg = OtelConfig::from_env_map(map_get(&m));
-        assert_eq!(cfg.service_name, "alanbase");
+        assert_eq!(cfg.service_name, "my-service");
     }
 }

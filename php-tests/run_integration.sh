@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run PHP integration against a mock OTLP receiver (expects alanbase_otel.so built for this PHP).
+# Run PHP integration against a mock OTLP receiver (expects otel_auto.so built for this PHP).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SO="${1:-$ROOT/alanbase_otel.so}"
+SO="${1:-$ROOT/otel_auto.so}"
 PORT="${OTLP_PORT:-14318}"
-OUT="${OTLP_OUT:-/tmp/alanbase-otlp-spans.json}"
+OUT="${OTLP_OUT:-/tmp/otel-auto-otlp-spans.json}"
 
 if [[ ! -f "$SO" ]]; then
   echo "missing $SO — build with Dockerfile.build first" >&2

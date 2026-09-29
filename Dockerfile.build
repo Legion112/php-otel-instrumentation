@@ -1,4 +1,4 @@
-# Build alanbase_otel.so against PHP 8.2 NTS (matches devops bases).
+# Build otel_auto.so against PHP 8.2 NTS (matches devops bases).
 FROM php:8.2-cli-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,9 +19,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-RUN cargo build -p alanbase_otel --release \
-    && cp target/release/libalanbase_otel.so /tmp/alanbase_otel.so \
-    && ls -la /tmp/alanbase_otel.so
+RUN cargo build -p otel_auto --release \
+    && cp target/release/libotel_auto.so /tmp/otel_auto.so \
+    && ls -la /tmp/otel_auto.so
 
 FROM scratch AS artifact
-COPY --from=builder /tmp/alanbase_otel.so /alanbase_otel.so
+COPY --from=builder /tmp/otel_auto.so /otel_auto.so

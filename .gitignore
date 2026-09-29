@@ -2,4 +2,4 @@
 **/*.so
 .idea/
 .DS_Store
-alanbase_otel.so
+otel_auto.so

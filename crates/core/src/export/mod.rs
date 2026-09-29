@@ -75,7 +75,7 @@ pub fn build_otlp_json(service_name: &str, spans: &[StartedSpan]) -> Value {
             },
             "scopeSpans": [{
                 "scope": {
-                    "name": "alanbase-otel",
+                    "name": "otel-auto",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "spans": otlp_spans
@@ -98,9 +98,9 @@ mod tests {
         );
         span.set_attr("rpc.system", "grpc");
         span.end_ok();
-        let body = build_otlp_json("alanbase", &[span]);
+        let body = build_otlp_json("my-service", &[span]);
         let s = body.to_string();
-        assert!(s.contains("alanbase"));
+        assert!(s.contains("my-service"));
         assert!(s.contains("LinkServiceProto.LinkService/getTargetLink"));
         assert!(s.contains("rpc.system"));
     }

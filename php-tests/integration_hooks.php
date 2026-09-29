@@ -8,8 +8,8 @@
 
 declare(strict_types=1);
 
-if (!extension_loaded('alanbase_otel')) {
-    fwrite(STDERR, "FAIL: alanbase_otel not loaded\n");
+if (!extension_loaded('otel_auto')) {
+    fwrite(STDERR, "FAIL: otel_auto not loaded\n");
     exit(1);
 }
 

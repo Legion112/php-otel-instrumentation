@@ -2,9 +2,9 @@
 
 use std::cell::RefCell;
 
-use alanbase_otel_core::parse::parse_grpc_path;
-use alanbase_otel_core::span::SpanKind;
-use alanbase_otel_core::truncate::truncate_statement;
+use otel_auto_core::parse::parse_grpc_path;
+use otel_auto_core::span::SpanKind;
+use otel_auto_core::truncate::truncate_statement;
 use ext_php_rs::types::Zval;
 use ext_php_rs::zend::{ExecuteData, FcallInfo};
 

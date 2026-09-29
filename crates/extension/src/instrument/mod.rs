@@ -95,11 +95,14 @@ pub fn begin_hook(kind: HookKind, execute_data: &ExecuteData, func_name: Option<
         HookKind::PdoQuery | HookKind::PdoExec => begin_pdo(execute_data),
         HookKind::PdoStatementExecute => begin_pdo_stmt(execute_data),
         HookKind::RedisCmd => begin_redis(execute_data),
-        HookKind::CurlExec => begin_curl(),
+        HookKind::CurlExec => begin_curl(execute_data),
     }
 }
 
-pub fn end_hook(kind: HookKind, _execute_data: &ExecuteData, retval: Option<&Zval>) {
+pub fn end_hook(kind: HookKind, execute_data: &ExecuteData, retval: Option<&Zval>) {
+    if kind == HookKind::CurlExec {
+        end_curl(execute_data);
+    }
     let err = match kind {
         HookKind::PdoQuery | HookKind::PdoExec | HookKind::PdoStatementExecute => {
             retval.and_then(|z| {
@@ -359,11 +362,163 @@ fn begin_redis(execute_data: &ExecuteData) {
     });
 }
 
-fn begin_curl() {
-    if !tracer::start_span("HTTP", SpanKind::Client) {
+// PHP curl_getinfo option constants (stable across PHP 8.x).
+const CURLINFO_EFFECTIVE_URL: i64 = 1_048_577;
+const CURLINFO_HTTP_CODE: i64 = 2_097_154;
+const CURLINFO_PRIMARY_IP: i64 = 1_048_608;
+const CURLINFO_PRIMARY_PORT: i64 = 2_097_192;
+
+fn begin_curl(execute_data: &ExecuteData) {
+    let url = arg_zval(execute_data, 0).and_then(|ch| curl_getinfo_str(ch, CURLINFO_EFFECTIVE_URL));
+    let parsed = url.as_deref().and_then(parse_http_url);
+    let name = match parsed.as_ref().map(|p| p.host.as_str()).filter(|h| !h.is_empty()) {
+        Some(host) => format!("GET {host}"),
+        None => "HTTP".into(),
+    };
+    if !tracer::start_span(name, SpanKind::Client) {
         return;
     }
     tracer::current_mut(|s| {
         s.set_attr("http.request.method", "GET");
+        if let Some(safe) = url.as_deref().map(strip_url_userinfo) {
+            if !safe.is_empty() {
+                s.set_attr("url.full", safe.clone());
+                s.set_attr("http.url", safe);
+            }
+        }
+        if let Some(p) = &parsed {
+            if !p.scheme.is_empty() {
+                s.set_attr("url.scheme", p.scheme.clone());
+            }
+            if !p.host.is_empty() {
+                s.set_attr("server.address", p.host.clone());
+            }
+            if !p.path.is_empty() {
+                s.set_attr("url.path", p.path.clone());
+            }
+            if let Some(port) = p.port {
+                s.set_attr("server.port", port.to_string());
+            }
+        }
     });
+}
+
+fn end_curl(execute_data: &ExecuteData) {
+    let Some(ch) = arg_zval(execute_data, 0) else {
+        return;
+    };
+    let url = curl_getinfo_str(ch, CURLINFO_EFFECTIVE_URL);
+    let status = curl_getinfo_i64(ch, CURLINFO_HTTP_CODE);
+    let peer_ip = curl_getinfo_str(ch, CURLINFO_PRIMARY_IP);
+    let peer_port = curl_getinfo_i64(ch, CURLINFO_PRIMARY_PORT);
+    tracer::current_mut(|s| {
+        if let Some(safe) = url.as_deref().map(strip_url_userinfo) {
+            if !safe.is_empty() {
+                s.set_attr("url.full", safe.clone());
+                s.set_attr("http.url", safe);
+            }
+        }
+        if let Some(code) = status.filter(|&c| c > 0) {
+            s.set_attr("http.response.status_code", code.to_string());
+        }
+        if let Some(ip) = peer_ip.filter(|ip| !ip.is_empty()) {
+            s.set_attr("network.peer.address", ip);
+        }
+        if let Some(port) = peer_port.filter(|&p| p > 0) {
+            s.set_attr("network.peer.port", port.to_string());
+        }
+    });
+}
+
+fn curl_getinfo_str(ch: &Zval, opt: i64) -> Option<String> {
+    let curl_getinfo = ZendCallable::try_from_name("curl_getinfo").ok()?;
+    let ret = curl_getinfo.try_call(vec![ch, &opt]).ok()?;
+    ret.string()
+        .or_else(|| ret.str().map(str::to_owned))
+        .filter(|s| !s.is_empty())
+}
+
+fn curl_getinfo_i64(ch: &Zval, opt: i64) -> Option<i64> {
+    let curl_getinfo = ZendCallable::try_from_name("curl_getinfo").ok()?;
+    let ret = curl_getinfo.try_call(vec![ch, &opt]).ok()?;
+    ret.long().or_else(|| {
+        ret.double()
+            .map(|d| d as i64)
+            .or_else(|| ret.string().and_then(|s| s.parse().ok()))
+    })
+}
+
+struct ParsedUrl {
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+    path: String,
+}
+
+/// Lightweight URL split for span attrs (no external crate).
+fn parse_http_url(raw: &str) -> Option<ParsedUrl> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (scheme, rest) = match raw.find("://") {
+        Some(i) => (&raw[..i], &raw[i + 3..]),
+        None => ("", raw),
+    };
+    let authority_end = rest.find('/').or_else(|| rest.find('?')).or_else(|| rest.find('#')).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let path_and_more = &rest[authority_end..];
+    let authority = match authority.rfind('@') {
+        Some(i) => &authority[i + 1..],
+        None => authority,
+    };
+    let (host, port) = if authority.starts_with('[') {
+        // IPv6: [addr]:port
+        match authority.find(']') {
+            Some(end) => {
+                let host = authority[1..end].to_string();
+                let port = authority[end + 1..]
+                    .strip_prefix(':')
+                    .and_then(|p| p.parse().ok());
+                (host, port)
+            }
+            None => (authority.to_string(), None),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
+                (h.to_string(), p.parse().ok())
+            }
+            _ => (authority.to_string(), None),
+        }
+    };
+    let path = match path_and_more.find(['?', '#']) {
+        Some(i) => path_and_more[..i].to_string(),
+        None => path_and_more.to_string(),
+    };
+    let path = if path.is_empty() { "/".into() } else { path };
+    Some(ParsedUrl {
+        scheme: scheme.to_ascii_lowercase(),
+        host,
+        port,
+        path,
+    })
+}
+
+/// Drop `user:pass@` from a URL for span attributes.
+fn strip_url_userinfo(raw: &str) -> String {
+    let Some(scheme_sep) = raw.find("://") else {
+        return raw.to_string();
+    };
+    let head = &raw[..scheme_sep + 3];
+    let rest = &raw[scheme_sep + 3..];
+    let Some(at) = rest.find('@') else {
+        return raw.to_string();
+    };
+    // Only strip if '@' is still in the authority (before path).
+    let authority_end = rest.find('/').or_else(|| rest.find('?')).or_else(|| rest.find('#')).unwrap_or(rest.len());
+    if at >= authority_end {
+        return raw.to_string();
+    }
+    format!("{head}{}", &rest[at + 1..])
 }

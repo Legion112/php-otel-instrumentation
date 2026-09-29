@@ -148,32 +148,71 @@ extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
     0
 }
 
-/// PHP `$_SERVER['argv']` when present, otherwise `std::env::args()`.
+/// CLI argv for span naming.
+///
+/// Prefer `SG(request_info).argv` (PHP CLI script + args). Fall back to process
+/// args / `$_SERVER['argv']`, picking the longest when SAPI only has the script.
 fn cli_argv() -> Vec<String> {
-    let pg = ProcessGlobals::get();
-    if let Some(server) = pg.http_server_vars() {
-        if let Some(zv) = server.get("argv") {
-            if let Some(ht) = zv.array() {
-                let mut out = Vec::new();
-                let mut i: i64 = 0;
-                while let Some(el) = ht.get_index(i) {
-                    if let Some(s) = el.string() {
-                        out.push(s);
-                    } else if let Some(s) = el.str() {
-                        out.push(s.to_string());
-                    }
-                    i += 1;
-                    if i > 256 {
-                        break;
-                    }
-                }
-                if !out.is_empty() {
-                    return out;
+    let sapi = sapi_cli_argv();
+    if sapi.len() > 1 {
+        return sapi;
+    }
+    let env: Vec<String> = std::env::args().collect();
+    let server = server_cli_argv();
+    [sapi, env, server]
+        .into_iter()
+        .max_by_key(|v| v.len())
+        .unwrap_or_default()
+}
+
+/// `SG(request_info).argv[0..argc]` (PHP CLI script + args).
+fn sapi_cli_argv() -> Vec<String> {
+    let sg = SapiGlobals::get();
+    let info = sg.request_info();
+    let argc = info.argc;
+    if argc <= 0 || info.argv.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(argc as usize);
+    unsafe {
+        let argv = std::slice::from_raw_parts(info.argv, argc as usize);
+        for &ptr in argv {
+            if ptr.is_null() {
+                continue;
+            }
+            if let Ok(s) = CStr::from_ptr(ptr).to_str() {
+                if !s.is_empty() {
+                    out.push(s.to_owned());
                 }
             }
         }
     }
-    std::env::args().collect()
+    out
+}
+
+fn server_cli_argv() -> Vec<String> {
+    let pg = ProcessGlobals::get();
+    let Some(server) = pg.http_server_vars() else {
+        return Vec::new();
+    };
+    let Some(zv) = server.get("argv") else {
+        return Vec::new();
+    };
+    let Some(ht) = zv.array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (_key, el) in ht.iter() {
+        if let Some(s) = el.str() {
+            out.push(s.to_owned());
+        } else if let Some(s) = el.string() {
+            out.push(s);
+        }
+        if out.len() > 256 {
+            break;
+        }
+    }
+    out
 }
 
 fn sapi_env(key: &str) -> Option<String> {

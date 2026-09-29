@@ -21,7 +21,8 @@ PHP module name: **`otel_auto`** (loads as `otel_auto.so`).
 | `OTEL_ENABLED` | `true`/`false` (default true) |
 | `OTEL_ENDPOINT` | host:port or URL (e.g. `alloy:4318`) |
 | `OTEL_SAMPLE_RATE` | `0.0`–`1.0` |
-| `OTEL_SERVICE_NAME` | optional; else `HOSTNAME` / `php` |
+| `OTEL_SERVICE_NAME` | optional override for `service.name` |
+| *(fallback)* | `APP_NAME` → `HOSTNAME` → `php` |
 
 ## Build `.so` (PHP 8.2 NTS)
 

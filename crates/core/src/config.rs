@@ -29,8 +29,8 @@ impl OtelConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0);
         let sample_rate = sample_rate.clamp(0.0, 1.0);
-        let service_name = get("OTEL_SERVICE_NAME")
-            .or_else(|| get("HOSTNAME"))
+        // Prefer explicit OTEL name, then Laravel APP_NAME (per-service), then HOSTNAME.
+        let service_name = first_nonempty(&mut get, &["OTEL_SERVICE_NAME", "APP_NAME", "HOSTNAME"])
             .unwrap_or_else(|| "php".to_string());
 
         Self {
@@ -73,6 +73,22 @@ fn parse_bool(v: Option<&str>) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+/// First non-empty (after trim) value among `keys`.
+fn first_nonempty<F>(get: &mut F, keys: &[&str]) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    for key in keys {
+        if let Some(v) = get(key) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -125,6 +141,34 @@ mod tests {
     #[test]
     fn service_name_from_hostname() {
         let mut m = HashMap::new();
+        m.insert("HOSTNAME", "my-service");
+        let cfg = OtelConfig::from_env_map(map_get(&m));
+        assert_eq!(cfg.service_name, "my-service");
+    }
+
+    #[test]
+    fn app_name_wins_over_hostname() {
+        let mut m = HashMap::new();
+        m.insert("APP_NAME", "Alanbase");
+        m.insert("HOSTNAME", "dd69ce387a13");
+        let cfg = OtelConfig::from_env_map(map_get(&m));
+        assert_eq!(cfg.service_name, "Alanbase");
+    }
+
+    #[test]
+    fn otel_service_name_wins_over_app_name() {
+        let mut m = HashMap::new();
+        m.insert("OTEL_SERVICE_NAME", "explicit");
+        m.insert("APP_NAME", "Alanbase");
+        m.insert("HOSTNAME", "dd69ce387a13");
+        let cfg = OtelConfig::from_env_map(map_get(&m));
+        assert_eq!(cfg.service_name, "explicit");
+    }
+
+    #[test]
+    fn empty_app_name_falls_through_to_hostname() {
+        let mut m = HashMap::new();
+        m.insert("APP_NAME", "  ");
         m.insert("HOSTNAME", "my-service");
         let cfg = OtelConfig::from_env_map(map_get(&m));
         assert_eq!(cfg.service_name, "my-service");

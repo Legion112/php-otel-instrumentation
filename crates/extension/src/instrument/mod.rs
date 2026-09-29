@@ -46,7 +46,7 @@ pub fn classify(info: &FcallInfo<'_>) -> Option<HookKind> {
     if class == "PDO" && func == "exec" {
         return Some(HookKind::PdoExec);
     }
-    if class == "PDOStatement" && func == "execute" {
+    if (class == "PDOStatement" || class.ends_with("\\PDOStatement")) && func == "execute" {
         return Some(HookKind::PdoStatementExecute);
     }
     if (class == "Redis" || class == "RedisCluster") && is_redis_cmd(func) {
@@ -85,7 +85,7 @@ pub fn begin_hook(kind: HookKind, execute_data: &ExecuteData, func_name: Option<
         HookKind::GrpcSimpleRequest => begin_grpc_client(execute_data),
         HookKind::GrpcInvoker => begin_grpc_server(execute_data),
         HookKind::PdoQuery | HookKind::PdoExec => begin_pdo(execute_data, kind),
-        HookKind::PdoStatementExecute => begin_pdo_stmt(),
+        HookKind::PdoStatementExecute => begin_pdo_stmt(execute_data),
         HookKind::RedisCmd => begin_redis(execute_data),
         HookKind::CurlExec => begin_curl(),
     }
@@ -188,14 +188,26 @@ fn begin_pdo(execute_data: &ExecuteData, kind: HookKind) {
     });
 }
 
-fn begin_pdo_stmt() {
+fn begin_pdo_stmt(execute_data: &ExecuteData) {
     if !tracer::start_span("db.execute", SpanKind::Client) {
         return;
     }
+    let sql = pdo_statement_query_string(execute_data).unwrap_or_default();
     tracer::current_mut(|s| {
         s.set_attr("db.system", "postgresql");
         s.set_attr("db.operation", "execute");
+        if !sql.is_empty() {
+            s.set_attr("db.statement", truncate_statement(&sql, 512));
+        }
     });
+}
+
+/// Read public `PDOStatement::$queryString` (prepared SQL with placeholders).
+fn pdo_statement_query_string(execute_data: &ExecuteData) -> Option<String> {
+    let this = execute_data.This.object()?;
+    this.get_property::<String>("queryString")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 fn begin_redis(execute_data: &ExecuteData) {

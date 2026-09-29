@@ -27,3 +27,23 @@ jobs:
         with:
           name: otel_auto.so
           path: otel_auto.so
+
+  php-integration:
+    needs: build-so
+    runs-on: ubuntu-latest
+    # Match Dockerfile.build (PHP 8.2 NTS) so otel_auto.so loads.
+    container: php:8.2-cli-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: otel_auto.so
+          path: .
+      - name: Install build deps for tiny_http / clap
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential pkg-config
+          php -v
+          ls -la otel_auto.so
+      - run: cargo run -p xtask -- php-integration --so ./otel_auto.so --php php

@@ -45,11 +45,20 @@ extension=otel_auto.so
 cargo test -p otel-auto-core
 ```
 
+## PHP integration (needs `.so` + `php` matching that build)
+
+```bash
+# after Dockerfile.build extract of otel_auto.so
+cargo run -p xtask -- php-integration
+# or: cargo run -p xtask -- php-integration --so ./otel_auto.so --php php
+```
+
 ## Layout
 
 - `crates/core` — config, gRPC path parse, span model, OTLP JSON export
 - `crates/extension` — ext-php-rs observer + request lifecycle
-- `php-tests/` — smoke + integration harness with mock OTLP receiver
+- `crates/xtask` — Rust mock OTLP + PHP integration runner
+- `php-tests/` — PHP fixtures (`smoke.php`, `integration_hooks.php`)
 
 ## License
 

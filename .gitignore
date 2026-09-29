@@ -1,0 +1,5 @@
+/target/
+**/*.so
+.idea/
+.DS_Store
+alanbase_otel.so

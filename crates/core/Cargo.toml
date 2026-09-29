@@ -1,0 +1,17 @@
+[package]
+name = "alanbase-otel-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure Rust core for Alanbase PHP OTEL auto-instrumentation (config, parsing, OTLP export)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

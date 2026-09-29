@@ -1,0 +1,27 @@
+# Build alanbase_otel.so against PHP 8.2 NTS (matches devops bases).
+FROM php:8.2-cli-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential clang libclang-dev llvm-14-dev pkg-config \
+        curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH \
+    LIBCLANG_PATH=/usr/lib/llvm-14/lib \
+    PHP_CONFIG=/usr/local/bin/php-config
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
+    && rustc --version && php -v && php-config --vernum
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN cargo build -p alanbase_otel --release \
+    && cp target/release/libalanbase_otel.so /tmp/alanbase_otel.so \
+    && ls -la /tmp/alanbase_otel.so
+
+FROM scratch AS artifact
+COPY --from=builder /tmp/alanbase_otel.so /alanbase_otel.so

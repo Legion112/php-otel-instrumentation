@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p alanbase-otel-core
+
+  build-so:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Dockerfile.build --target builder -t alanbase-otel-build .
+      - run: |
+          id=$(docker create alanbase-otel-build)
+          docker cp "$id:/tmp/alanbase_otel.so" alanbase_otel.so
+          docker rm "$id"
+          ls -la alanbase_otel.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alanbase_otel.so
+          path: alanbase_otel.so

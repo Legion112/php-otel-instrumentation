@@ -93,10 +93,12 @@ unsafe fn zstr_to_str<'a>(s: *mut ext_php_rs::ffi::zend_string) -> Option<&'a st
 }
 
 extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
-    // W3C Trace Context from inbound HTTP (nginx FastCGI → HTTP_TRACEPARENT).
+    // W3C Trace Context from inbound HTTP (nginx FastCGI → HTTP_TRACEPARENT)
+    // or process env (docker exec → TRACEPARENT / HTTP_TRACEPARENT).
     let traceparent = sapi_env("HTTP_TRACEPARENT")
         .or_else(|| server_header("HTTP_TRACEPARENT"))
-        .or_else(|| std::env::var("HTTP_TRACEPARENT").ok());
+        .or_else(|| std::env::var("HTTP_TRACEPARENT").ok())
+        .or_else(|| std::env::var("TRACEPARENT").ok());
     tracer::on_request_start(traceparent.as_deref());
 
     // FPM sets SG(request_info).request_uri to SCRIPT_NAME (/index.php), not the

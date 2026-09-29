@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 use otel_auto_core::parse::parse_grpc_path;
 use otel_auto_core::span::SpanKind;
+use otel_auto_core::sql_verb::{sql_operation, sql_span_name};
 use otel_auto_core::truncate::truncate_statement;
 use ext_php_rs::types::Zval;
 use ext_php_rs::zend::{ExecuteData, FcallInfo};
@@ -84,7 +85,7 @@ pub fn begin_hook(kind: HookKind, execute_data: &ExecuteData, func_name: Option<
     match kind {
         HookKind::GrpcSimpleRequest => begin_grpc_client(execute_data),
         HookKind::GrpcInvoker => begin_grpc_server(execute_data),
-        HookKind::PdoQuery | HookKind::PdoExec => begin_pdo(execute_data, kind),
+        HookKind::PdoQuery | HookKind::PdoExec => begin_pdo(execute_data),
         HookKind::PdoStatementExecute => begin_pdo_stmt(execute_data),
         HookKind::RedisCmd => begin_redis(execute_data),
         HookKind::CurlExec => begin_curl(),
@@ -170,34 +171,27 @@ fn begin_grpc_server(execute_data: &ExecuteData) {
     });
 }
 
-fn begin_pdo(execute_data: &ExecuteData, kind: HookKind) {
+fn begin_pdo(execute_data: &ExecuteData) {
     let sql = arg_string(execute_data, 0).unwrap_or_default();
-    let op = match kind {
-        HookKind::PdoExec => "exec",
-        _ => "query",
-    };
-    if !tracer::start_span(format!("db.{op}"), SpanKind::Client) {
+    start_pdo_span(&sql);
+}
+
+fn begin_pdo_stmt(execute_data: &ExecuteData) {
+    let sql = pdo_statement_query_string(execute_data).unwrap_or_default();
+    start_pdo_span(&sql);
+}
+
+fn start_pdo_span(sql: &str) {
+    let name = sql_span_name(sql);
+    let op = sql_operation(sql);
+    if !tracer::start_span(name, SpanKind::Client) {
         return;
     }
     tracer::current_mut(|s| {
         s.set_attr("db.system", "postgresql");
         s.set_attr("db.operation", op);
         if !sql.is_empty() {
-            s.set_attr("db.statement", truncate_statement(&sql, 512));
-        }
-    });
-}
-
-fn begin_pdo_stmt(execute_data: &ExecuteData) {
-    if !tracer::start_span("db.execute", SpanKind::Client) {
-        return;
-    }
-    let sql = pdo_statement_query_string(execute_data).unwrap_or_default();
-    tracer::current_mut(|s| {
-        s.set_attr("db.system", "postgresql");
-        s.set_attr("db.operation", "execute");
-        if !sql.is_empty() {
-            s.set_attr("db.statement", truncate_statement(&sql, 512));
+            s.set_attr("db.statement", truncate_statement(sql, 512));
         }
     });
 }

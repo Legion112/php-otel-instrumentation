@@ -82,6 +82,44 @@ impl TraceContext {
         }
     }
 
+    /// Parse a W3C `traceparent` header into a remote parent context.
+    ///
+    /// Format: `{version}-{trace-id}-{parent-id}-{trace-flags}` (e.g. `00-…-…-01`).
+    /// Returns `None` for invalid / all-zero IDs. The returned context uses the
+    /// remote parent-id as `span_id` so callers can `child_of` to continue the trace.
+    pub fn from_traceparent(header: &str) -> Option<Self> {
+        let header = header.trim();
+        let parts: Vec<&str> = header.split('-').collect();
+        if parts.len() != 4 {
+            return None;
+        }
+        let version = parts[0];
+        if version.len() != 2 || version.eq_ignore_ascii_case("ff") {
+            return None;
+        }
+        if parts[1].len() != 32 || parts[2].len() != 16 || parts[3].len() != 2 {
+            return None;
+        }
+        if !parts[1].chars().all(|c| c.is_ascii_hexdigit())
+            || !parts[2].chars().all(|c| c.is_ascii_hexdigit())
+            || !parts[3].chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let mut trace_id = [0u8; 16];
+        let mut span_id = [0u8; 8];
+        hex::decode_to_slice(parts[1], &mut trace_id).ok()?;
+        hex::decode_to_slice(parts[2], &mut span_id).ok()?;
+        if trace_id.iter().all(|&b| b == 0) || span_id.iter().all(|&b| b == 0) {
+            return None;
+        }
+        Some(Self {
+            trace_id,
+            span_id,
+            parent_span_id: None,
+        })
+    }
+
     pub fn trace_id_hex(&self) -> String {
         hex::encode(self.trace_id)
     }
@@ -172,5 +210,42 @@ mod tests {
         assert_eq!(parts[1].len(), 32);
         assert_eq!(parts[2].len(), 16);
         assert_eq!(parts[3], "01");
+    }
+
+    #[test]
+    fn from_traceparent_roundtrip() {
+        let root = TraceContext::new_root();
+        let parsed = TraceContext::from_traceparent(&root.traceparent()).unwrap();
+        assert_eq!(parsed.trace_id, root.trace_id);
+        assert_eq!(parsed.span_id, root.span_id);
+        let child = TraceContext::child_of(&parsed);
+        assert_eq!(child.trace_id, root.trace_id);
+        assert_eq!(child.parent_span_id, Some(root.span_id));
+    }
+
+    #[test]
+    fn from_traceparent_rejects_invalid() {
+        assert!(TraceContext::from_traceparent("").is_none());
+        assert!(TraceContext::from_traceparent("00-00-00-01").is_none());
+        assert!(TraceContext::from_traceparent(
+            "00-00000000000000000000000000000000-b7ad6b7169203331-01"
+        )
+        .is_none());
+        assert!(TraceContext::from_traceparent(
+            "00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01"
+        )
+        .is_none());
+        assert!(TraceContext::from_traceparent(
+            "ff-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn from_traceparent_valid_example() {
+        let tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let ctx = TraceContext::from_traceparent(tp).unwrap();
+        assert_eq!(ctx.trace_id_hex(), "0af7651916cd43dd8448eb211c80319c");
+        assert_eq!(ctx.span_id_hex(), "b7ad6b7169203331");
     }
 }

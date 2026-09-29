@@ -13,6 +13,8 @@ thread_local! {
     static ACTIVE: RefCell<Vec<StartedSpan>> = const { RefCell::new(Vec::new()) };
     static FINISHED: RefCell<Vec<StartedSpan>> = const { RefCell::new(Vec::new()) };
     static SAMPLED: RefCell<bool> = const { RefCell::new(false) };
+    /// Remote parent from inbound `traceparent` (consumed by the first root span).
+    static REMOTE_PARENT: RefCell<Option<TraceContext>> = const { RefCell::new(None) };
 }
 
 pub fn init_config() {
@@ -23,10 +25,17 @@ pub fn config() -> &'static OtelConfig {
     CONFIG.get_or_init(OtelConfig::from_env)
 }
 
-pub fn on_request_start() {
+pub fn on_request_start(traceparent: Option<&str>) {
     ACTIVE.with(|a| a.borrow_mut().clear());
     FINISHED.with(|f| f.borrow_mut().clear());
-    let sample = config().should_sample();
+    let remote = traceparent.and_then(TraceContext::from_traceparent);
+    // Always continue a valid inbound trace so go_test ↔ PHP share one TraceID.
+    let sample = if remote.is_some() {
+        true
+    } else {
+        config().should_sample()
+    };
+    REMOTE_PARENT.with(|r| *r.borrow_mut() = remote);
     SAMPLED.with(|s| *s.borrow_mut() = sample);
 }
 
@@ -71,7 +80,13 @@ pub fn start_span(name: impl Into<String>, kind: SpanKind) -> bool {
         let mut stack = a.borrow_mut();
         let ctx = match stack.last() {
             Some(parent) => TraceContext::child_of(&parent.ctx),
-            None => TraceContext::new_root(),
+            None => {
+                let remote = REMOTE_PARENT.with(|r| r.borrow_mut().take());
+                match remote {
+                    Some(parent) => TraceContext::child_of(&parent),
+                    None => TraceContext::new_root(),
+                }
+            }
         };
         stack.push(StartedSpan::start(name, kind, ctx));
         true

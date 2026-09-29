@@ -92,7 +92,11 @@ unsafe fn zstr_to_str<'a>(s: *mut ext_php_rs::ffi::zend_string) -> Option<&'a st
 }
 
 extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
-    tracer::on_request_start();
+    // W3C Trace Context from inbound HTTP (nginx FastCGI → HTTP_TRACEPARENT).
+    let traceparent = sapi_env("HTTP_TRACEPARENT")
+        .or_else(|| server_header("HTTP_TRACEPARENT"))
+        .or_else(|| std::env::var("HTTP_TRACEPARENT").ok());
+    tracer::on_request_start(traceparent.as_deref());
 
     // FPM sets SG(request_info).request_uri to SCRIPT_NAME (/index.php), not the
     // client URI. Real path is FastCGI REQUEST_URI → sapi_getenv / $_SERVER.
@@ -244,6 +248,12 @@ fn server_request_fields() -> (
         get("PATH_INFO"),
         get("REQUEST_METHOD"),
     )
+}
+
+fn server_header(key: &str) -> Option<String> {
+    let pg = ProcessGlobals::get();
+    let server = pg.http_server_vars()?;
+    server.get(key).and_then(|z| z.string())
 }
 
 extern "C" fn request_shutdown(_type: c_int, _module_number: c_int) -> c_int {

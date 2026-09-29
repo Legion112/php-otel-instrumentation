@@ -6,7 +6,7 @@ use otel_auto_core::parse::parse_grpc_path;
 use otel_auto_core::span::SpanKind;
 use otel_auto_core::sql_verb::{sql_operation, sql_span_name};
 use otel_auto_core::truncate::truncate_statement;
-use ext_php_rs::types::Zval;
+use ext_php_rs::types::{ArrayKey, ZendCallable, ZendHashTable, Zval};
 use ext_php_rs::zend::{ExecuteData, FcallInfo};
 
 use crate::tracer;
@@ -33,12 +33,7 @@ pub fn classify(info: &FcallInfo<'_>) -> Option<HookKind> {
     if class == "Grpc\\BaseStub" && func == "_simpleRequest" {
         return Some(HookKind::GrpcSimpleRequest);
     }
-    // Spiral RoadRunner GRPC Invoker (inbound worker dispatch).
-    if (class == "Spiral\\RoadRunner\\GRPC\\Invoker"
-        || class.ends_with("\\GRPC\\Invoker")
-        || (class.contains("RoadRunner") && class.contains("GRPC") && class.ends_with("Invoker")))
-        && (func == "invoke" || func == "Invoke")
-    {
+    if is_grpc_invoker(class) && (func == "invoke" || func == "Invoke") {
         return Some(HookKind::GrpcInvoker);
     }
     if class == "PDO" && func == "query" {
@@ -57,6 +52,18 @@ pub fn classify(info: &FcallInfo<'_>) -> Option<HookKind> {
         return Some(HookKind::CurlExec);
     }
     None
+}
+
+/// Match Spiral RR Invoker and alanbase `ServiceCore\Grpc\Invoker` (case-insensitive Grpc/GRPC).
+fn is_grpc_invoker(class: &str) -> bool {
+    if class == "Spiral\\RoadRunner\\GRPC\\Invoker" || class == "ServiceCore\\Grpc\\Invoker" {
+        return true;
+    }
+    let lower = class.to_ascii_lowercase();
+    if lower.ends_with("\\grpc\\invoker") {
+        return true;
+    }
+    lower.contains("roadrunner") && lower.contains("grpc") && lower.ends_with("invoker")
 }
 
 fn is_redis_cmd(func: &str) -> bool {
@@ -117,17 +124,23 @@ pub fn end_hook(kind: HookKind, _execute_data: &ExecuteData, retval: Option<&Zva
     } else {
         tracer::end_current_ok();
     }
+    // RR Invoker is a per-RPC job boundary: flush OTLP when the job ends.
+    if kind == HookKind::GrpcInvoker {
+        tracer::on_request_end();
+    }
     REDIS_FUNC.with(|c| *c.borrow_mut() = None);
 }
 
+fn arg_zval(execute_data: &ExecuteData, n: usize) -> Option<&mut Zval> {
+    unsafe { execute_data.zend_call_arg(n) }
+}
+
 fn arg_string(execute_data: &ExecuteData, n: usize) -> Option<String> {
-    unsafe {
-        let z = execute_data.zend_call_arg(n)?;
-        if let Some(s) = z.string() {
-            return Some(s);
-        }
-        z.long().map(|i| i.to_string())
+    let z = arg_zval(execute_data, n)?;
+    if let Some(s) = z.string() {
+        return Some(s);
     }
+    z.long().map(|i| i.to_string())
 }
 
 fn begin_grpc_client(execute_data: &ExecuteData) {
@@ -155,12 +168,43 @@ fn begin_grpc_client(execute_data: &ExecuteData) {
             s.set_attr("rpc.method", path);
         }
     });
+    // Inject W3C Traceparent into gRPC metadata (arg 3) so RR servers can continue.
+    inject_traceparent_metadata(execute_data);
+}
+
+fn inject_traceparent_metadata(execute_data: &ExecuteData) {
+    let Some(tp) = tracer::current_traceparent() else {
+        return;
+    };
+    let Some(meta) = arg_zval(execute_data, 3) else {
+        return;
+    };
+    if meta.array().is_none() {
+        meta.set_hashtable(ZendHashTable::new());
+    }
+    let Some(ht) = meta.array_mut() else {
+        return;
+    };
+    // Do not overwrite caller-supplied traceparent.
+    if ht.get("traceparent").is_some() {
+        return;
+    }
+    let mut values = ZendHashTable::new();
+    if values.insert_at_index(0, tp.as_str()).is_err() {
+        return;
+    }
+    let _ = ht.insert("traceparent", values);
 }
 
 fn begin_grpc_server(execute_data: &ExecuteData) {
-    let service = arg_string(execute_data, 0).unwrap_or_else(|| "grpc.service".into());
-    let method = arg_string(execute_data, 1).unwrap_or_else(|| "unknown".into());
+    // invoke(ServiceInterface $service, Method $method, ContextInterface $ctx, ?string $input)
+    let tp = context_traceparent(execute_data);
+    tracer::on_request_start(tp.as_deref());
+
+    let method = method_get_name(execute_data).unwrap_or_else(|| "unknown".into());
+    let service = service_rpc_name(execute_data).unwrap_or_else(|| "grpc.service".into());
     let name = format!("{service}/{method}");
+
     if !tracer::start_span(name, SpanKind::Server) {
         return;
     }
@@ -169,6 +213,97 @@ fn begin_grpc_server(execute_data: &ExecuteData) {
         s.set_attr("rpc.service", service);
         s.set_attr("rpc.method", method);
     });
+}
+
+fn method_get_name(execute_data: &ExecuteData) -> Option<String> {
+    let method_zv = arg_zval(execute_data, 1)?;
+    let ret = method_zv.try_call_method("getName", vec![]).ok()?;
+    ret.string().filter(|s| !s.is_empty())
+}
+
+fn service_rpc_name(execute_data: &ExecuteData) -> Option<String> {
+    let service_zv = arg_zval(execute_data, 0)?;
+    // Prefer interface NAME constant (e.g. CommonServiceProto.CommonService).
+    if let Some(name) = interface_name_constant(service_zv) {
+        return Some(name);
+    }
+    service_zv
+        .object()
+        .and_then(|o| o.get_class_name().ok())
+        .filter(|s| !s.is_empty())
+}
+
+fn interface_name_constant(service_zv: &Zval) -> Option<String> {
+    let class_implements = ZendCallable::try_from_name("class_implements").ok()?;
+    let ifaces = class_implements.try_call(vec![service_zv]).ok()?;
+    let ht = ifaces.array()?;
+    let constant_fn = ZendCallable::try_from_name("constant").ok()?;
+    for (_k, iface_zv) in ht.iter() {
+        let iface = iface_zv
+            .str()
+            .map(str::to_owned)
+            .or_else(|| iface_zv.string())?;
+        if iface.is_empty() {
+            continue;
+        }
+        let const_path = format!("{iface}::NAME");
+        let Ok(val) = constant_fn.try_call(vec![&const_path]) else {
+            continue;
+        };
+        if let Some(s) = val.string().filter(|s| !s.is_empty()) {
+            return Some(s);
+        }
+        if let Some(s) = val.str().filter(|s| !s.is_empty()) {
+            return Some(s.to_owned());
+        }
+    }
+    None
+}
+
+fn context_traceparent(execute_data: &ExecuteData) -> Option<String> {
+    let ctx = arg_zval(execute_data, 2)?;
+    // Prefer getValue('traceparent'); RR metadata values are array<string>.
+    if let Ok(val) = ctx.try_call_method("getValue", vec![&"traceparent"]) {
+        if let Some(s) = first_metadata_string(&val) {
+            return Some(s);
+        }
+    }
+    // Fallback: scan getValues() for a traceparent-like key.
+    let Ok(values) = ctx.try_call_method("getValues", vec![]) else {
+        return None;
+    };
+    let ht = values.array()?;
+    for (key, el) in ht.iter() {
+        let key_s = match key {
+            ArrayKey::String(s) => s.to_ascii_lowercase(),
+            _ => continue,
+        };
+        if key_s == "traceparent" || key_s.ends_with("traceparent") {
+            if let Some(s) = first_metadata_string(el) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+fn first_metadata_string(z: &Zval) -> Option<String> {
+    if let Some(s) = z.string().filter(|s| !s.is_empty()) {
+        return Some(s);
+    }
+    if let Some(s) = z.str().filter(|s| !s.is_empty()) {
+        return Some(s.to_owned());
+    }
+    let ht = z.array()?;
+    for (_k, el) in ht.iter() {
+        if let Some(s) = el.string().filter(|s| !s.is_empty()) {
+            return Some(s);
+        }
+        if let Some(s) = el.str().filter(|s| !s.is_empty()) {
+            return Some(s.to_owned());
+        }
+    }
+    None
 }
 
 fn begin_pdo(execute_data: &ExecuteData) {

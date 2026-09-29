@@ -3,7 +3,7 @@
 mod instrument;
 mod tracer;
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
@@ -20,7 +20,8 @@ unsafe extern "C" {
 use instrument::{begin_hook, classify, end_hook, HookKind};
 
 thread_local! {
-    static PENDING: Cell<Option<HookKind>> = const { Cell::new(None) };
+    /// Stack of in-flight observed calls (must nest; a single Cell drops Invoker ends).
+    static PENDING: RefCell<Vec<HookKind>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Auto-instrumentation observer.
@@ -36,12 +37,12 @@ impl FcallObserver for OtelAutoObserver {
         let Some(kind) = classify(&info) else {
             return;
         };
-        PENDING.with(|p| p.set(Some(kind)));
+        PENDING.with(|p| p.borrow_mut().push(kind));
         begin_hook(kind, execute_data, info.function_name);
     }
 
     fn end(&self, execute_data: &ExecuteData, retval: Option<&Zval>) {
-        if let Some(kind) = PENDING.with(|p| p.take()) {
+        if let Some(kind) = PENDING.with(|p| p.borrow_mut().pop()) {
             end_hook(kind, execute_data, retval);
         }
     }
@@ -122,6 +123,13 @@ extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
         .or_else(|| sapi_env("SCRIPT_FILENAME"))
         .or_else(|| std::env::var("SCRIPT_FILENAME").ok());
 
+    let argv = cli_argv();
+    // RoadRunner workers are long-lived CLI processes; do not open a process-lifetime
+    // root span. Per-RPC SERVER roots start in Invoker::invoke instead.
+    if is_roadrunner_worker(script.as_deref(), &argv) {
+        return 0;
+    }
+
     let candidates = [
         fcgi_uri.as_deref(),
         server_uri.as_deref(),
@@ -138,8 +146,6 @@ extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
     let name = if method_trimmed.is_some() {
         root_span_name_from_candidates(method_trimmed, &candidates, script.as_deref())
     } else {
-        // Prefer $_SERVER['argv'] (PHP CLI); process args as fallback.
-        let argv = cli_argv();
         cli_span_name(script.as_deref(), &argv)
     };
     let path_attr = method_trimmed.map(|_| prefer_http_path(&candidates).to_string());
@@ -150,6 +156,17 @@ extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
     );
 
     0
+}
+
+fn is_roadrunner_worker(script: Option<&str>, argv: &[String]) -> bool {
+    let looks_like_worker = |s: &str| {
+        let lower = s.to_ascii_lowercase();
+        lower.ends_with("worker.php") || lower.contains("/worker.php") || lower.contains("\\worker.php")
+    };
+    if script.map(looks_like_worker).unwrap_or(false) {
+        return true;
+    }
+    argv.iter().any(|a| looks_like_worker(a))
 }
 
 /// CLI argv for span naming.

@@ -81,10 +81,25 @@ fn run_php_integration(
 
     let smoke = root.join("php-tests/smoke.php");
     let hooks = root.join("php-tests/integration_hooks.php");
+    let cont = root.join("php-tests/continue_trace.php");
     let ext = format!("extension={}", so.display());
 
-    run_php(&php, &ext, &smoke, port)?;
-    run_php(&php, &ext, &hooks, port)?;
+    run_php(&php, &ext, &smoke, port, &[])?;
+    run_php(&php, &ext, &hooks, port, &[])?;
+
+    // Known inbound Trace Context — SERVER root must continue this TraceID.
+    const TP: &str = "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01";
+    run_php(
+        &php,
+        &ext,
+        &cont,
+        port,
+        &[
+            ("HTTP_TRACEPARENT", TP),
+            ("REQUEST_METHOD", "GET"),
+            ("REQUEST_URI", "/continue"),
+        ],
+    )?;
 
     thread::sleep(Duration::from_millis(200));
 
@@ -103,22 +118,42 @@ fn run_php_integration(
             return Err(format!("missing {need} in {preview}"));
         }
     }
+    for need in [
+        "cccccccccccccccccccccccccccccccc",
+        "dddddddddddddddd",
+        "otel.traceparent.continued",
+    ] {
+        if !blob.contains(need) {
+            let preview: String = blob.chars().take(3000).collect();
+            return Err(format!("missing continue marker {need} in {preview}"));
+        }
+    }
 
-    println!("PASS: OTLP received gRPC client span");
+    println!("PASS: OTLP received gRPC client span + continued TraceID");
     mock.shutdown();
     Ok(())
 }
 
-fn run_php(php: &Path, ext: &str, script: &Path, port: u16) -> Result<(), String> {
-    let status = Command::new(php)
-        .args(["-d", ext])
+fn run_php(
+    php: &Path,
+    ext: &str,
+    script: &Path,
+    port: u16,
+    extra_env: &[(&str, &str)],
+) -> Result<(), String> {
+    let mut cmd = Command::new(php);
+    cmd.args(["-d", ext])
         .arg(script)
         .env("OTEL_ENABLED", "true")
         .env("OTEL_ENDPOINT", format!("127.0.0.1:{port}"))
         .env("OTEL_SAMPLE_RATE", "1.0")
         .env("OTEL_SERVICE_NAME", "php-otel-integration")
         .env("REQUEST_METHOD", "GET")
-        .env("REQUEST_URI", "/integration")
+        .env("REQUEST_URI", "/integration");
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let status = cmd
         .status()
         .map_err(|e| format!("failed to spawn {}: {e}", php.display()))?;
     if !status.success() {

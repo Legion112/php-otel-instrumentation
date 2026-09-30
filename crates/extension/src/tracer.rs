@@ -129,10 +129,15 @@ pub fn current_traceparent() -> Option<String> {
 
 /// Start SERVER root span with the given display name and optional HTTP attrs.
 pub fn start_root(name: impl Into<String>, method: Option<&str>, path: Option<&str>) {
+    // Empty ACTIVE stack: parent_span_id Some ⇒ continued from inbound traceparent.
+    let will_continue = REMOTE_PARENT.with(|r| r.borrow().is_some());
     if !start_span(name, SpanKind::Server) {
         return;
     }
     current_mut(|s| {
+        if will_continue {
+            s.set_attr("otel.traceparent.continued", "true");
+        }
         if let Some(m) = method {
             s.set_attr("http.request.method", m);
         }

@@ -93,12 +93,15 @@ unsafe fn zstr_to_str<'a>(s: *mut ext_php_rs::ffi::zend_string) -> Option<&'a st
 }
 
 extern "C" fn request_startup(_type: c_int, _module_number: c_int) -> c_int {
-    // W3C Trace Context from inbound HTTP (nginx FastCGI → HTTP_TRACEPARENT)
-    // or process env (docker exec → TRACEPARENT / HTTP_TRACEPARENT).
-    let traceparent = sapi_env("HTTP_TRACEPARENT")
-        .or_else(|| server_header("HTTP_TRACEPARENT"))
-        .or_else(|| std::env::var("HTTP_TRACEPARENT").ok())
-        .or_else(|| std::env::var("TRACEPARENT").ok());
+    // W3C Trace Context from inbound HTTP (nginx FastCGI → HTTP_TRACEPARENT /
+    // TRACEPARENT) or process env (docker exec → TRACEPARENT / HTTP_TRACEPARENT).
+    // Empty strings are misses so an empty FastCGI param does not block fallbacks.
+    let traceparent = nonempty_sapi("HTTP_TRACEPARENT")
+        .or_else(|| nonempty_sapi("TRACEPARENT"))
+        .or_else(|| nonempty_server("HTTP_TRACEPARENT"))
+        .or_else(|| nonempty_server("TRACEPARENT"))
+        .or_else(|| nonempty_process("HTTP_TRACEPARENT"))
+        .or_else(|| nonempty_process("TRACEPARENT"));
     tracer::on_request_start(traceparent.as_deref());
 
     // FPM sets SG(request_info).request_uri to SCRIPT_NAME (/index.php), not the
@@ -248,6 +251,18 @@ fn sapi_env(key: &str) -> Option<String> {
         // FPM returns a pointer into the request env; do not free.
         CStr::from_ptr(ptr).to_str().ok().map(str::to_owned)
     }
+}
+
+fn nonempty_sapi(key: &str) -> Option<String> {
+    sapi_env(key).filter(|s| !s.is_empty())
+}
+
+fn nonempty_server(key: &str) -> Option<String> {
+    server_header(key).filter(|s| !s.is_empty())
+}
+
+fn nonempty_process(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
 }
 
 fn server_request_fields() -> (

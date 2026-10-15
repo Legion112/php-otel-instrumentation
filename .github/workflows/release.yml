@@ -1,0 +1,66 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-so:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: "8.2"
+            arch: x86_64
+            runs-on: ubuntu-latest
+          - php: "8.5"
+            arch: x86_64
+            runs-on: ubuntu-latest
+          - php: "8.2"
+            arch: aarch64
+            runs-on: ubuntu-24.04-arm
+          - php: "8.5"
+            arch: aarch64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build otel_auto.so (PHP ${{ matrix.php }} / ${{ matrix.arch }})
+        run: |
+          docker build -f Dockerfile.build --target builder \
+            --build-arg PHP_VERSION=${{ matrix.php }} \
+            -t otel-auto-build:${{ matrix.php }}-${{ matrix.arch }} .
+          id=$(docker create otel-auto-build:${{ matrix.php }}-${{ matrix.arch }})
+          docker cp "$id:/tmp/otel_auto.so" "otel_auto-php${{ matrix.php }}-linux-${{ matrix.arch }}.so"
+          docker rm "$id"
+          ls -la "otel_auto-php${{ matrix.php }}-linux-${{ matrix.arch }}.so"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otel_auto-php${{ matrix.php }}-linux-${{ matrix.arch }}
+          path: otel_auto-php${{ matrix.php }}-linux-${{ matrix.arch }}.so
+
+  release:
+    needs: build-so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List assets
+        run: ls -la dist/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/otel_auto-php8.2-linux-x86_64.so
+            dist/otel_auto-php8.2-linux-aarch64.so
+            dist/otel_auto-php8.5-linux-x86_64.so
+            dist/otel_auto-php8.5-linux-aarch64.so
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

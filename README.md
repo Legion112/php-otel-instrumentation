@@ -14,6 +14,30 @@ Exports OTLP/HTTP JSON (`OTEL_ENDPOINT`, default `alloy:4318`).
 
 PHP module name: **`otel_auto`** (loads as `otel_auto.so`).
 
+Supported runtimes: **PHP 8.2 / 8.5 NTS**, **linux x86_64 / aarch64**.
+
+## Download (prebuilt)
+
+Do **not** use pecl.php.net — this is a Rust/`ext-php-rs` extension, not a classic C PECL package. Install path is **[GitHub Releases](https://github.com/Legion112/php-otel-instrumentation/releases)**.
+
+Pick the asset that matches `php -v` and `uname -m`:
+
+| PHP | Arch | Asset |
+|-----|------|-------|
+| 8.2 | x86_64 | `otel_auto-php8.2-linux-x86_64.so` |
+| 8.2 | aarch64 | `otel_auto-php8.2-linux-aarch64.so` |
+| 8.5 | x86_64 | `otel_auto-php8.5-linux-x86_64.so` |
+| 8.5 | aarch64 | `otel_auto-php8.5-linux-aarch64.so` |
+
+```bash
+# example: PHP 8.5 on x86_64
+curl -LO https://github.com/Legion112/php-otel-instrumentation/releases/latest/download/otel_auto-php8.5-linux-x86_64.so
+# copy into extension_dir and enable:
+# extension=otel_auto.so
+```
+
+ABI must match: an 8.2-built `.so` will not load on PHP 8.5 (and vice versa). Same for arch.
+
 ## Environment
 
 | Variable | Meaning |
@@ -24,16 +48,19 @@ PHP module name: **`otel_auto`** (loads as `otel_auto.so`).
 | `OTEL_SERVICE_NAME` | optional override for `service.name` |
 | *(fallback)* | `APP_NAME` → `HOSTNAME` → `php` |
 
-## Build `.so` (PHP 8.2 NTS)
+## Build `.so` from source (PHP 8.2 / 8.5 NTS)
 
 ```bash
-docker build -f Dockerfile.build --target builder -t otel-auto-build .
+# default PHP_VERSION=8.5; use 8.2 for the other ABI
+docker build -f Dockerfile.build --target builder \
+  --build-arg PHP_VERSION=8.5 \
+  -t otel-auto-build .
 docker create --name otel-so otel-auto-build
 docker cp otel-so:/tmp/otel_auto.so ./otel_auto.so
 docker rm otel-so
 ```
 
-Enable with:
+Build on the same CPU arch you will run on (or use CI Release assets). Enable with:
 
 ```ini
 extension=otel_auto.so

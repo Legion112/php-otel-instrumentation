@@ -1,6 +1,9 @@
-# Build otel_auto.so against PHP 8.2 NTS (matches devops bases).
-FROM php:8.2-cli-bookworm AS builder
+# Build otel_auto.so against PHP NTS (8.2 or 8.5). Platform follows the host
+# (linux/amd64 or linux/arm64). Default 8.5 matches current devops bases.
+ARG PHP_VERSION=8.5
+FROM php:${PHP_VERSION}-cli-bookworm AS builder
 
+ARG PHP_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential clang libclang-dev llvm-14-dev pkg-config \
         curl ca-certificates git \
@@ -13,7 +16,8 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     LIBCLANG_PATH=/usr/lib/llvm-14/lib \
     PHP_CONFIG=/usr/local/bin/php-config
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
-    && rustc --version && php -v && php-config --vernum
+    && rustc --version && php -v && php-config --vernum \
+    && echo "Building otel_auto for PHP ${PHP_VERSION}"
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
